@@ -15,6 +15,7 @@ try:
 except AttributeError:
     collectionsAbc = collections
 
+from flux import util
 import yaml
 
 
@@ -162,6 +163,10 @@ def get_slurm_common_parser():
     return slurm_parser
 
 
+logger = logging.getLogger(__name__)
+
+
+@util.cli_main(logger)
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--format", choices=["json", "yaml"], default="json")
@@ -189,18 +194,4 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO, format="%(module)s: %(levelname)s: %(message)s"
-    )
-    logger = logging.getLogger(__name__)
-    exit_code = 0
-    try:
-        main()
-    except SystemExit as e:  # don't intercept sys.exit calls
-        exit_code = e
-    except Exception as e:
-        exit_code = 1
-        logging.error(str(e))
-    finally:
-        logging.shutdown()
-        sys.exit(exit_code)
+    main()
