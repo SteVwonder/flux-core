@@ -8,6 +8,7 @@
 # SPDX-License-Identifier: LGPL-3.0
 ###############################################################
 
+import os
 import sys
 import errno
 import json
@@ -17,7 +18,13 @@ import six
 
 from flux.core.inner import ffi, raw
 
-__all__ = ["check_future_error", "encode_payload", "encode_topic", "cli_main"]
+__all__ = [
+    "check_future_error",
+    "encode_payload",
+    "encode_topic",
+    "modfind",
+    "cli_main",
+]
 
 
 def check_future_error(func):
@@ -62,6 +69,18 @@ def encode_topic(topic):
         errmsg = "Topic must be a string, not {}".format(type(topic))
         raise TypeError(errno.EINVAL, errmsg)
     return topic
+
+
+def modfind(modname):
+    searchpath = os.getenv("FLUX_MODULE_PATH")
+    if searchpath is None:
+        raise ValueError("FLUX_MODULE_PATH not set")
+    ret = raw.modfind(searchpath, modname, ffi.NULL, ffi.NULL)
+    if ret is None:
+        raise EnvironmentError(
+            errno.ENOENT, "{} not found in module search path".format(modname)
+        )
+    return ret
 
 
 class cli_main(object):

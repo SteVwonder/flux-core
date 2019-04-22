@@ -15,8 +15,8 @@ from operator import attrgetter
 from collections import defaultdict, Sequence
 
 import flux
-import flux.job
-from flux import util
+from flux import job, rpc, util, kvs
+from flux.rpc import RPC
 
 
 def create_resource(res_type, count, with_child=[]):
@@ -253,13 +253,64 @@ class SacctReader(JobTraceReader):
         return jobs
 
 
+def insert_resource_data(num_ranks, cores_per_rank):
+    """
+    Populate the KVS with the resource data of the simulated system
+    An example of the data format: {"0": {"Package": 7, "Core": 7, "PU": 7, "cpuset": "0-6"}}
+    """
+    if num_ranks <= 0:
+        raise ValueError("Requires at least one rank")
+
+    kvs_key = "resource.hwloc.by_rank"
+    resource_dict = {}
+    for rank in range(num_ranks):
+        resource_dict[rank] = {}
+        for key in ["Package", "Core", "PU"]:
+            resource_dict[rank][key] = cores_per_rank
+        resource_dict[rank]["cpuset"] = (
+            "0-{}".format(cores_per_rank - 1) if cores_per_rank > 1 else "0"
+        )
+    put_rc = flux.kvs.put(flux_handle, kvs_key, resource_dict)
+    if put_rc < 0:
+        raise ValueError("Error inserting resource data into KVS, rc={}".format(put_rc))
+    flux.kvs.commit(flux_handle)
+
+
+def get_loaded_modules():
+    modules = RPC(flux_handle, "cmb.lsmod").get()
+    return modules["mods"]
+
+
+def load_missing_modules():
+    # TODO: check that necessary modules are loaded
+    # if not, load them
+    # return an updated list of loaded modules
+    loaded_modules = get_loaded_modules()
+    pass
+
+def reload_scheduler():
+    sched_module = "sched-simple"
+    # Check if there is a module already loaded providing 'sched' service,
+    # if so, reload that module
+    for module in get_loaded_modules():
+        if "sched" in module["services"]:
+            sched_module = module["name"]
+
+    logger.debug("Reloading the '{}' module".format(sched_module))
+    RPC(flux_handle, "cmb.rmmod", payload={"name": "sched-simple"}).get()
+    path = flux.util.modfind("sched-simple")
+    RPC(flux_handle, "cmb.insmod", payload=json.dumps({"path": path, "args": []})).get()
+
+
 logger = logging.getLogger(__name__)
 
 
-@util.cli_main(logger)
+@flux.util.cli_main(logger)
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("job_file")
+    parser.add_argument("num_ranks", type=int)
+    parser.add_argument("cores_per_rank", type=int)
     parser.add_argument("--log-level", type=int)
     args = parser.parse_args()
 
@@ -269,9 +320,9 @@ def main():
     global flux_handle
     flux_handle = flux.Flux()
 
-    # TODO: check that necessary modules are loaded
-    # TODO: load fake resource data
-    # TODO: force the scheduler to reload the resource data
+    load_missing_modules()
+    insert_resource_data(args.num_ranks, args.cores_per_rank)
+    reload_scheduler()
     # TODO: subscribe the job notifications
     # TODO: register callback as the exec system
 
