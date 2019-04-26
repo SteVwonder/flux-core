@@ -5,6 +5,7 @@ import argparse
 import re
 import csv
 import six
+import sys
 import json
 import logging
 import heapq
@@ -276,6 +277,22 @@ def insert_resource_data(num_ranks, cores_per_rank):
     flux.kvs.commit(flux_handle)
 
 
+def sched_idle_cb(flux_handle, watcher, msg, event_list):
+    logger.debug("Received a sched idle cb")
+    logger.debug("msg: {}".format(msg))
+    try:
+        advance_simulation(event_list)
+    except StopIteration:
+        logger.info("No more events in event list, ending simulation")
+        flux_handle.reactor_stop(flux_handle.get_reactor())
+
+
+def job_state_cb(flux_handle, watcher, msg, cb_args):
+    event_list, job_map = cb_args
+    logger.debug("Received a job state cb")
+    logger.debug("msg: {}".format(msg))
+
+
 def get_loaded_modules():
     modules = RPC(flux_handle, "cmb.lsmod").get()
     return modules["mods"]
@@ -287,6 +304,14 @@ def load_missing_modules():
     # return an updated list of loaded modules
     loaded_modules = get_loaded_modules()
     pass
+
+
+def advance_simulation(event_list):
+    time, events_at_time = next(event_list)
+    logger.debug("Fast-forwarding time to {}".format(time))
+    for event in events_at_time:
+        event()
+
 
 def reload_scheduler():
     sched_module = "sched-simple"
@@ -320,12 +345,6 @@ def main():
     global flux_handle
     flux_handle = flux.Flux()
 
-    load_missing_modules()
-    insert_resource_data(args.num_ranks, args.cores_per_rank)
-    reload_scheduler()
-    # TODO: subscribe the job notifications
-    # TODO: register callback as the exec system
-
     event_list = EventList()
     reader = SacctReader(args.job_file)
     reader.validate_trace()
@@ -334,10 +353,36 @@ def main():
     for job in jobs:
         job.insert_apriori_events(event_list, job_map)
 
-    for time, events_at_time in event_list:
-        logger.debug("Fast-forwarding time to {}".format(time))
-        for event in events_at_time:
-            event()
+    load_missing_modules()
+    insert_resource_data(args.num_ranks, args.cores_per_rank)
+    reload_scheduler()
+
+    flux_handle.event_subscribe("job-state")
+    job_state_watcher = flux_handle.msg_watcher_create(
+        job_state_cb,
+        type_mask=flux.constants.FLUX_MSGTYPE_EVENT,
+        topic_glob="job-state",
+        args=(event_list, job_map),
+    )
+    job_state_watcher.start()
+    flux_handle.event_subscribe("sched-idle")
+    sched_idle_watcher = flux_handle.msg_watcher_create(
+        sched_idle_cb,
+        type_mask=flux.constants.FLUX_MSGTYPE_EVENT,
+        topic_glob="sched-idle",
+        args=event_list,
+    )
+    sched_idle_watcher.start()
+
+    # TODO: register callback as the exec system
+
+    try:
+        advance_simulation(event_list)
+    except StopIteration:
+        logger.error("Event list is empty. Exiting simulation")
+        sys.exit(1)
+
+    flux_handle.reactor_run(flux_handle.get_reactor(), 0)
 
 
 if __name__ == "__main__":
