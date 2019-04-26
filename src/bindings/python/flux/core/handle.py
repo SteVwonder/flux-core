@@ -129,6 +129,9 @@ class Flux(Wrapper):
     def event_recv(self, topic=None):
         return self.recv(type_mask=raw.FLUX_MSGTYPE_EVENT, topic_glob=topic)
 
+    def event_subscribe(self, topic):
+        return self.flux_event_subscribe(topic)
+
     def msg_watcher_create(
         self,
         callback,
