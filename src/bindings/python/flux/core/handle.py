@@ -8,6 +8,8 @@
 # SPDX-License-Identifier: LGPL-3.0
 ###############################################################
 
+import json
+
 import six
 
 from flux.wrapper import Wrapper
@@ -73,6 +75,16 @@ class Flux(Wrapper):
         if isinstance(message, Message):
             message = message.handle
         return self.flux_send(message, flags)
+
+    def respond(self, message, payload=None):
+        """Respond to a flux rpc"""
+        if isinstance(message, Message):
+            message = message.handle
+        if isinstance(payload, six.text_type):
+            payload = payload.encode("utf-8")
+        elif not isinstance(payload, six.binary_type):
+            payload = json.dumps(payload)
+        return self.flux_respond(message, payload)
 
     def recv(
         self,
