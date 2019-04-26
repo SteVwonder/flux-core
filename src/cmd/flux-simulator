@@ -109,16 +109,11 @@ class Job(object):
     def cancel(self):
         raise NotImplementedError()
 
-    def insert_apriori_events(self, event_list, job_map):
+    def insert_apriori_events(self, simulation):
         # TODO: add priority to `add_event` so that all submits for a given time
         # can happen consecutively, followed by the waits for the jobids
-        event_list.add_event(self.submit_time, self.submit)
-
-        def insert_job_into_map():
-            job_map[self.jobid] = self
-
-        # TODO: is inserting into job_map in this method the right place?
-        event_list.add_event(self.submit_time, insert_job_into_map)
+        simulation.add_event(self.submit_time, self.submit)
+        simulation.add_event(self.submit_time, lambda: simulation.add_job(self))
 
 
 class EventList(six.Iterator):
@@ -156,6 +151,32 @@ class EventList(six.Iterator):
             return time, event_list
         except (IndexError, KeyError):
             raise StopIteration()
+
+
+class Simulation(object):
+    def __init__(self, event_list, job_map):
+        self.event_list = event_list
+        self.job_map = job_map
+        self.current_time = 0
+
+    def add_event(self, time, callback):
+        self.event_list.add_event(time, callback)
+
+    def add_job(self, job):
+        self.job_map[job.jobid] = job
+
+    def get_job(self, jobid):
+        return self.job_map[jobid]
+
+    def advance(self):
+        try:
+            self.current_time, events_at_time = next(self.event_list)
+        except StopIteration:
+            logger.info("No more events in event list, ending simulation")
+            flux_handle.reactor_stop(flux_handle.get_reactor())
+        logger.debug("Fast-forwarding time to {}".format(self.current_time))
+        for event in events_at_time:
+            event()
 
 
 def datetime_to_epoch(dt):
@@ -277,24 +298,19 @@ def insert_resource_data(num_ranks, cores_per_rank):
     flux.kvs.commit(flux_handle)
 
 
-def sched_idle_cb(flux_handle, watcher, msg, event_list):
+def sched_idle_cb(flux_handle, watcher, msg, simulation):
     logger.debug("Received a sched idle cb")
-    logger.debug("msg: {}".format(msg))
-    try:
-        advance_simulation(event_list)
-    except StopIteration:
-        logger.info("No more events in event list, ending simulation")
-        flux_handle.reactor_stop(flux_handle.get_reactor())
+    logger.debug("msg payload: {}".format(msg.payload))
+    simulation.advance()
 
 
-def job_state_cb(flux_handle, watcher, msg, cb_args):
-    event_list, job_map = cb_args
+def job_state_cb(flux_handle, watcher, msg, simulation):
     logger.debug("Received a job state cb")
-    logger.debug("msg: {}".format(msg))
+    logger.debug("msg payload: {}".format(msg.payload))
 
 
 def get_loaded_modules():
-    modules = RPC(flux_handle, "cmb.lsmod").get()
+    modules = flux_handle.rpc("cmb.lsmod").get()
     return modules["mods"]
 
 
@@ -306,13 +322,6 @@ def load_missing_modules():
     pass
 
 
-def advance_simulation(event_list):
-    time, events_at_time = next(event_list)
-    logger.debug("Fast-forwarding time to {}".format(time))
-    for event in events_at_time:
-        event()
-
-
 def reload_scheduler():
     sched_module = "sched-simple"
     # Check if there is a module already loaded providing 'sched' service,
@@ -322,9 +331,10 @@ def reload_scheduler():
             sched_module = module["name"]
 
     logger.debug("Reloading the '{}' module".format(sched_module))
-    RPC(flux_handle, "cmb.rmmod", payload={"name": "sched-simple"}).get()
+    flux_handle.rpc("cmb.rmmod", payload={"name": "sched-simple"}).get()
     path = flux.util.modfind("sched-simple")
-    RPC(flux_handle, "cmb.insmod", payload=json.dumps({"path": path, "args": []})).get()
+    flux_handle.rpc("cmb.insmod", payload=json.dumps({"path": path, "args": []})).get()
+
 
 
 logger = logging.getLogger(__name__)
@@ -345,45 +355,39 @@ def main():
     global flux_handle
     flux_handle = flux.Flux()
 
-    event_list = EventList()
+    simulation = Simulation(EventList(), {})
     reader = SacctReader(args.job_file)
     reader.validate_trace()
     jobs = list(reader.read_trace())
-    job_map = {}
     for job in jobs:
-        job.insert_apriori_events(event_list, job_map)
+        job.insert_apriori_events(simulation)
 
     load_missing_modules()
     insert_resource_data(args.num_ranks, args.cores_per_rank)
     reload_scheduler()
 
-    flux_handle.event_subscribe("job-state")
-    job_state_watcher = flux_handle.msg_watcher_create(
-        job_state_cb,
-        type_mask=flux.constants.FLUX_MSGTYPE_EVENT,
-        topic_glob="job-state",
-        args=(event_list, job_map),
-    )
-    job_state_watcher.start()
-    flux_handle.event_subscribe("sched-idle")
-    sched_idle_watcher = flux_handle.msg_watcher_create(
-        sched_idle_cb,
-        type_mask=flux.constants.FLUX_MSGTYPE_EVENT,
-        topic_glob="sched-idle",
-        args=event_list,
-    )
-    sched_idle_watcher.start()
 
     # TODO: register callback as the exec system
 
-    try:
-        advance_simulation(event_list)
-    except StopIteration:
-        logger.error("Event list is empty. Exiting simulation")
-        sys.exit(1)
-
+    watchers = []
+    for event_topic, cb, args in [
+            ("job-state", job_state_cb, simulation),
+            ("sched-idle", sched_idle_cb, simulation),
+    ]:
+        flux_handle.event_subscribe(event_topic)
+        watcher = flux_handle.msg_watcher_create(
+            cb,
+            type_mask=flux.constants.FLUX_MSGTYPE_EVENT,
+            topic_glob=event_topic,
+            args=args,
+        )
+        watcher.start()
+        watchers.append(watcher)
+    simulation.advance()
     flux_handle.reactor_run(flux_handle.get_reactor(), 0)
 
+    for watcher in watchers:
+        watcher.stop()
 
 if __name__ == "__main__":
     main()
