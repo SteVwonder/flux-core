@@ -95,21 +95,22 @@ static char *Rstring_create (struct rlist *l)
     return (s);
 }
 
-static void try_alloc (flux_t *h, struct simple_sched *ss)
+static bool try_alloc (flux_t *h, struct simple_sched *ss)
 {
+    bool job_scheduled = false;
     char *s = NULL;
     struct rlist *alloc = NULL;
     struct jj_counts *jj = NULL;
     char *R = NULL;
     if (!ss->job)
-        return;
+        return job_scheduled;
     jj = &ss->job->jj;
     alloc = rlist_alloc (ss->rlist, ss->mode,
                          jj->nnodes, jj->nslots, jj->slot_size);
     if (!alloc) {
         const char *note = "unable to allocate provided jobspec";
         if (errno == ENOSPC)
-            return;
+            return job_scheduled;
         if (errno == EOVERFLOW)
             note = "unsatisfiable request";
         if (schedutil_alloc_respond_denied (h, ss->job->msg, note) < 0)
@@ -124,6 +125,7 @@ static void try_alloc (flux_t *h, struct simple_sched *ss)
         flux_log_error (h, "schedutil_alloc_respond_R");
 
     flux_log (h, LOG_DEBUG, "alloc: %ju: %s", (uintmax_t) ss->job->id, s);
+    job_scheduled = true;
 
 out:
     jobreq_destroy (ss->job);
@@ -131,6 +133,7 @@ out:
     rlist_destroy (alloc);
     free (R);
     free (s);
+    return job_scheduled;
 }
 
 void exception_cb (flux_t *h, flux_jobid_t id,
@@ -167,6 +170,14 @@ static int try_free (flux_t *h, struct simple_sched *ss, const char *R)
     return rc;
 }
 
+static void send_idle_event (flux_t *h)
+{
+    // Used to notify flux-simulator (and potentially other future tools) that
+    // the scheduler is idle until the next job completes or is submitted
+    flux_log (h, LOG_DEBUG, "%s", __FUNCTION__);
+    flux_event_publish (h, "sched-idle", 0, NULL);
+}
+
 void free_cb (flux_t *h, const flux_msg_t *msg, const char *R, void *arg)
 {
     struct simple_sched *ss = arg;
@@ -180,7 +191,8 @@ void free_cb (flux_t *h, const flux_msg_t *msg, const char *R, void *arg)
         flux_log_error (h, "free_cb: schedutil_free_respond");
 
     /* See if we can fulfill alloc for a pending job */
-    try_alloc (h, ss);
+    if (try_alloc (h, ss) == false)
+        send_idle_event (h);
 }
 
 static void alloc_cb (flux_t *h, const flux_msg_t *msg,
@@ -206,7 +218,8 @@ static void alloc_cb (flux_t *h, const flux_msg_t *msg,
     flux_log (h, LOG_DEBUG, "req: %ju: spec={%d,%d,%d}",
                             (uintmax_t) ss->job->id, ss->job->jj.nnodes,
                             ss->job->jj.nslots, ss->job->jj.slot_size);
-    try_alloc (h, ss);
+    if (try_alloc (h, ss) == false)
+        send_idle_event (h);
     return;
 err:
     if (flux_respond_error (h, msg, errno, NULL) < 0)
