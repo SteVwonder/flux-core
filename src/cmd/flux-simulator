@@ -376,6 +376,38 @@ def service_remove(f, name):
     return f.future_get(future, None)
 
 
+def setup_watchers(flux_handle, simulation):
+    watchers = []
+    services = set()
+    for type_mask, topic, cb, args in [
+            (flux.constants.FLUX_MSGTYPE_EVENT, "job-state", job_state_cb, simulation),
+            (flux.constants.FLUX_MSGTYPE_REQUEST, "sim-exec.start", sim_exec_start_cb, simulation),
+    ]:
+        if type_mask == flux.constants.FLUX_MSGTYPE_EVENT:
+            flux_handle.event_subscribe(topic)
+        watcher = flux_handle.msg_watcher_create(
+            cb,
+            type_mask=type_mask,
+            topic_glob=topic,
+            args=args,
+        )
+        watcher.start()
+        watchers.append(watcher)
+        if type_mask == flux.constants.FLUX_MSGTYPE_REQUEST:
+            service_name = topic.split(".")[0]
+            if service_name not in services:
+                service_add(flux_handle, service_name)
+                services.add(service_name)
+    return watchers, services
+
+
+def teardown_watchers(flux_handle, watchers, services):
+    for watcher in watchers:
+        watcher.stop()
+    for service_name in services:
+        service_remove(flux_handle, service_name)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -405,45 +437,11 @@ def main():
     insert_resource_data(args.num_ranks, args.cores_per_rank)
     reload_scheduler()
 
-    watchers = []
-    services = set()
-    for event_topic, cb, args in [
-            ("job-state", job_state_cb, simulation),
-            ("sched-idle", sched_idle_cb, simulation),
-    ]:
-        flux_handle.event_subscribe(event_topic)
-        watcher = flux_handle.msg_watcher_create(
-            cb,
-            type_mask=flux.constants.FLUX_MSGTYPE_EVENT,
-            topic_glob=event_topic,
-            args=args,
-        )
-        watcher.start()
-        watchers.append(watcher)
-    for req_topic, cb, args in [
-            ("sim-exec.start", sim_exec_start_cb, simulation),
-    ]:
-        watcher = flux_handle.msg_watcher_create(
-            cb,
-            type_mask=flux.constants.FLUX_MSGTYPE_REQUEST,
-            topic_glob=req_topic,
-            args=args,
-        )
-        watcher.start()
-        watchers.append(watcher)
-        service_name = req_topic.split(".")[0]
-        if service_name not in services:
-            service_add(flux_handle, service_name)
-            services.add(service_name)
-
-            exec_hello()
+    watchers, services = setup_watchers(flux_handle, simulation)
+    exec_hello()
     simulation.advance()
     flux_handle.reactor_run(flux_handle.get_reactor(), 0)
-
-    for watcher in watchers:
-        watcher.stop()
-    for service_name in services:
-        service_remove(flux_handle, service_name)
+    teardown_watchers(flux_handle, watchers, services)
 
 if __name__ == "__main__":
     main()
