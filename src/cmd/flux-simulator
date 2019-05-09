@@ -82,7 +82,7 @@ class Job(object):
         self._jobspec = jobspec
         return self._jobspec
 
-    def submit(self):
+    def submit(self, flux_handle):
         logger.debug("Submitting a new job")
         jobspec_json = json.dumps(self.jobspec)
         logger.debug(jobspec_json)
@@ -104,7 +104,7 @@ class Job(object):
             raise ValueError("Job has not started yet")
         return self.start_time + self.elapsed_time
 
-    def start(self, start_msg, start_time):
+    def start(self, flux_handle, start_msg, start_time):
         logger.debug("Starting job {}".format(self.jobid))
         self.start_time = start_time
         self._start_msg = start_msg.copy()
@@ -164,21 +164,22 @@ class EventList(six.Iterator):
 
 
 class Simulation(object):
-    def __init__(self, event_list, job_map):
+    def __init__(self, flux_handle, event_list, job_map):
         self.event_list = event_list
         self.job_map = job_map
         self.current_time = 0
+        self.flux_handle = flux_handle
 
     def add_event(self, time, callback):
         self.event_list.add_event(time, callback)
 
     def submit_job(self, job):
-        job.submit()
+        job.submit(self.flux_handle)
         self.job_map[job.jobid] = job
 
     def start_job(self, jobid, start_msg):
         job = self.job_map[jobid]
-        job.start(start_msg, self.current_time)
+        job.start(self.flux_handle, start_msg, self.current_time)
         self.add_event(
             job.complete_time,
             lambda: self.complete_job(job)
@@ -192,7 +193,7 @@ class Simulation(object):
             self.current_time, events_at_time = next(self.event_list)
         except StopIteration:
             logger.info("No more events in event list, ending simulation")
-            flux_handle.reactor_stop(flux_handle.get_reactor())
+            self.flux_handle.reactor_stop(self.flux_handle.get_reactor())
         logger.debug("Fast-forwarding time to {}".format(self.current_time))
         for event in events_at_time:
             event()
@@ -294,7 +295,7 @@ class SacctReader(JobTraceReader):
         return jobs
 
 
-def insert_resource_data(num_ranks, cores_per_rank):
+def insert_resource_data(flux_handle, num_ranks, cores_per_rank):
     """
     Populate the KVS with the resource data of the simulated system
     An example of the data format: {"0": {"Package": 7, "Core": 7, "PU": 7, "cpuset": "0-6"}}
@@ -317,8 +318,8 @@ def insert_resource_data(num_ranks, cores_per_rank):
     flux.kvs.commit(flux_handle)
 
 
-def sched_idle_cb(flux_handle, watcher, msg, simulation):
-    logger.debug("Received a sched idle cb")
+def system_converged_continuation(flux_handle, watcher, msg, simulation):
+    logger.debug("Received a response indicating the system has converged")
     logger.debug("msg payload: {}".format(msg.payload))
     simulation.advance()
 
@@ -328,24 +329,24 @@ def job_state_cb(flux_handle, watcher, msg, simulation):
     logger.debug("msg payload: {}".format(msg.payload))
 
 
-def get_loaded_modules():
+def get_loaded_modules(flux_handle):
     modules = flux_handle.rpc("cmb.lsmod").get()
     return modules["mods"]
 
 
-def load_missing_modules():
+def load_missing_modules(flux_handle):
     # TODO: check that necessary modules are loaded
     # if not, load them
     # return an updated list of loaded modules
-    loaded_modules = get_loaded_modules()
+    loaded_modules = get_loaded_modules(flux_handle)
     pass
 
 
-def reload_scheduler():
+def reload_scheduler(flux_handle):
     sched_module = "sched-simple"
     # Check if there is a module already loaded providing 'sched' service,
     # if so, reload that module
-    for module in get_loaded_modules():
+    for module in get_loaded_modules(flux_handle):
         if "sched" in module["services"]:
             sched_module = module["name"]
 
@@ -361,7 +362,7 @@ def sim_exec_start_cb(flux_handle, watcher, msg, simulation):
     jobid = payload['id']
     simulation.start_job(jobid, msg)
 
-def exec_hello():
+def exec_hello(flux_handle):
     logger.debug("Registering sim-exec with job-manager")
     flux_handle.rpc("job-manager.exec-hello", payload={"service":"sim-exec"}).get()
 
@@ -423,22 +424,21 @@ def main():
     if args.log_level:
         logger.setLevel(args.log_level)
 
-    global flux_handle
     flux_handle = flux.Flux()
 
-    simulation = Simulation(EventList(), {})
+    simulation = Simulation(flux_handle, EventList(), {})
     reader = SacctReader(args.job_file)
     reader.validate_trace()
     jobs = list(reader.read_trace())
     for job in jobs:
         job.insert_apriori_events(simulation)
 
-    load_missing_modules()
-    insert_resource_data(args.num_ranks, args.cores_per_rank)
-    reload_scheduler()
+    load_missing_modules(flux_handle)
+    insert_resource_data(flux_handle, args.num_ranks, args.cores_per_rank)
+    reload_scheduler(flux_handle)
 
     watchers, services = setup_watchers(flux_handle, simulation)
-    exec_hello()
+    exec_hello(flux_handle)
     simulation.advance()
     flux_handle.reactor_run(flux_handle.get_reactor(), 0)
     teardown_watchers(flux_handle, watchers, services)
