@@ -50,6 +50,7 @@ class Job(object):
         self._jobid = None
         self._jobspec = None
         self._submit_future = None
+        self._start_msg = None
 
     @property
     def jobspec(self):
@@ -101,7 +102,17 @@ class Job(object):
     def complete_time(self):
         if self.start_time is None:
             raise ValueError("Job has not started yet")
-        return self.start_time + self.elapsed
+        return self.start_time + self.elapsed_time
+
+    def start(self, start_msg, start_time):
+        logger.debug("Starting job {}".format(self.jobid))
+        self.start_time = start_time
+        self._start_msg = start_msg.copy()
+        flux_handle.respond(self._start_msg, payload={
+            "id": self.jobid,
+            "type": "start",
+            "data": {}
+        })
 
     def complete(self):
         raise NotImplementedError()
@@ -112,8 +123,7 @@ class Job(object):
     def insert_apriori_events(self, simulation):
         # TODO: add priority to `add_event` so that all submits for a given time
         # can happen consecutively, followed by the waits for the jobids
-        simulation.add_event(self.submit_time, self.submit)
-        simulation.add_event(self.submit_time, lambda: simulation.add_job(self))
+        simulation.add_event(self.submit_time, lambda: simulation.submit_job(self))
 
 
 class EventList(six.Iterator):
@@ -162,11 +172,20 @@ class Simulation(object):
     def add_event(self, time, callback):
         self.event_list.add_event(time, callback)
 
-    def add_job(self, job):
+    def submit_job(self, job):
+        job.submit()
         self.job_map[job.jobid] = job
 
-    def get_job(self, jobid):
-        return self.job_map[jobid]
+    def start_job(self, jobid, start_msg):
+        job = self.job_map[jobid]
+        job.start(start_msg, self.current_time)
+        self.add_event(
+            job.complete_time,
+            lambda: self.complete_job(job)
+        )
+
+    def complete_job(self, job):
+        pass
 
     def advance(self):
         try:
@@ -336,6 +355,26 @@ def reload_scheduler():
     flux_handle.rpc("cmb.insmod", payload=json.dumps({"path": path, "args": []})).get()
 
 
+def sim_exec_start_cb(flux_handle, watcher, msg, simulation):
+    payload = msg.payload
+    logger.debug("Received sim-exec.start request. Payload: {}".format(payload))
+    jobid = payload['id']
+    simulation.start_job(jobid, msg)
+
+def exec_hello():
+    logger.debug("Registering sim-exec with job-manager")
+    flux_handle.rpc("job-manager.exec-hello", payload={"service":"sim-exec"}).get()
+
+
+def service_add(f, name):
+    future = f.service_register(name)
+    return f.future_get(future, None)
+
+
+def service_remove(f, name):
+    future = f.service_unregister(name)
+    return f.future_get(future, None)
+
 
 logger = logging.getLogger(__name__)
 
@@ -366,10 +405,8 @@ def main():
     insert_resource_data(args.num_ranks, args.cores_per_rank)
     reload_scheduler()
 
-
-    # TODO: register callback as the exec system
-
     watchers = []
+    services = set()
     for event_topic, cb, args in [
             ("job-state", job_state_cb, simulation),
             ("sched-idle", sched_idle_cb, simulation),
@@ -383,11 +420,30 @@ def main():
         )
         watcher.start()
         watchers.append(watcher)
+    for req_topic, cb, args in [
+            ("sim-exec.start", sim_exec_start_cb, simulation),
+    ]:
+        watcher = flux_handle.msg_watcher_create(
+            cb,
+            type_mask=flux.constants.FLUX_MSGTYPE_REQUEST,
+            topic_glob=req_topic,
+            args=args,
+        )
+        watcher.start()
+        watchers.append(watcher)
+        service_name = req_topic.split(".")[0]
+        if service_name not in services:
+            service_add(flux_handle, service_name)
+            services.add(service_name)
+
+            exec_hello()
     simulation.advance()
     flux_handle.reactor_run(flux_handle.get_reactor(), 0)
 
     for watcher in watchers:
         watcher.stop()
+    for service_name in services:
+        service_remove(flux_handle, service_name)
 
 if __name__ == "__main__":
     main()
