@@ -118,6 +118,9 @@ class Message(WrapperPimpl):
     def type_str(self):
         return msg_typestr(self.type)
 
+    def copy(self, payload=True):
+        return self.pimpl.copy(payload)
+
 
 # Residing here to avoid cyclic references
 
