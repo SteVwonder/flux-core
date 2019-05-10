@@ -194,9 +194,15 @@ class Simulation(object):
         except StopIteration:
             logger.info("No more events in event list, ending simulation")
             self.flux_handle.reactor_stop(self.flux_handle.get_reactor())
+            return
         logger.debug("Fast-forwarding time to {}".format(self.current_time))
         for event in events_at_time:
             event()
+        logger.debug("Sending quiescent request for time {}".format(self.current_time))
+        self.flux_handle.rpc(
+            "job-manager.quiescent",
+            {"time":self.current_time}
+        ).then(system_quiescent_continuation, arg=self)
 
 
 def datetime_to_epoch(dt):
@@ -318,9 +324,8 @@ def insert_resource_data(flux_handle, num_ranks, cores_per_rank):
     flux.kvs.commit(flux_handle)
 
 
-def system_converged_continuation(flux_handle, watcher, msg, simulation):
-    logger.debug("Received a response indicating the system has converged")
-    logger.debug("msg payload: {}".format(msg.payload))
+def system_quiescent_continuation(future, simulation):
+    logger.debug("Received a response indicating the system is quiescent")
     simulation.advance()
 
 
@@ -354,6 +359,10 @@ def reload_scheduler(flux_handle):
     flux_handle.rpc("cmb.rmmod", payload={"name": "sched-simple"}).get()
     path = flux.util.modfind("sched-simple")
     flux_handle.rpc("cmb.insmod", payload=json.dumps({"path": path, "args": []})).get()
+
+
+def job_exception_cb(flux_handle, watcher, msg, cb_args):
+    logger.warn("Detected a job exception, but not handling it")
 
 
 def sim_exec_start_cb(flux_handle, watcher, msg, simulation):

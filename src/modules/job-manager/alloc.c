@@ -88,6 +88,7 @@
 #include "alloc.h"
 #include "queue.h"
 #include "event.h"
+#include "simulator.h"
 
 typedef enum {
     SCHED_SINGLE,       // only allow one outstanding sched.alloc request
@@ -99,6 +100,7 @@ struct alloc_ctx {
     flux_msg_handler_t **handlers;
     struct queue *queue;    // main active job queue
     struct event_ctx *event_ctx;
+    struct sim_ctx *sim_ctx;
     struct queue *inqueue;  // secondary queue of jobs to be scheduled
     sched_interface_t mode;
     bool ready;
@@ -292,6 +294,7 @@ int alloc_request (struct alloc_ctx *ctx, struct job *job)
     if (flux_send (ctx->h, msg, 0) < 0)
         goto error;
     flux_msg_destroy (msg);
+    sim_sending_sched_request (ctx->sim_ctx);
     return 0;
 error:
     flux_msg_destroy (msg);
@@ -488,7 +491,8 @@ static const struct flux_msg_handler_spec htab[] = {
 };
 
 struct alloc_ctx *alloc_ctx_create (flux_t *h, struct queue *queue,
-                                    struct event_ctx *event_ctx)
+                                    struct event_ctx *event_ctx,
+                                    struct sim_ctx *sim_ctx)
 {
     struct alloc_ctx *ctx;
     flux_reactor_t *r = flux_get_reactor (h);
@@ -498,6 +502,7 @@ struct alloc_ctx *alloc_ctx_create (flux_t *h, struct queue *queue,
     ctx->h = h;
     ctx->queue = queue;
     ctx->event_ctx = event_ctx;
+    ctx->sim_ctx = sim_ctx;
     if (!(ctx->inqueue = queue_create (false)))
         goto error;
     if (flux_msg_handler_addvec (h, htab, ctx, &ctx->handlers) < 0)

@@ -16,13 +16,15 @@
 #include "queue.h"
 #include "job.h"
 #include "event.h"
+#include "simulator.h"
 
 struct alloc_ctx;
 struct event_ctx;
 
 void alloc_ctx_destroy (struct alloc_ctx *ctx);
 struct alloc_ctx *alloc_ctx_create (flux_t *h, struct queue *queue,
-                                    struct event_ctx *event_ctx);
+                                    struct event_ctx *event_ctx,
+                                    struct sim_ctx *sim_ctx);
 
 /* Call from SCHED state to put job in queue to request resources.
  * This function is a no-op if job->alloc_queued or job->alloc_pending is set.

@@ -35,7 +35,9 @@ job_manager_la_SOURCES = job-manager.c \
 			 list.h \
 			 list.c \
 			 priority.h \
-			 priority.c
+			 priority.c \
+			 simulator.h \
+			 simulator.c
 
 job_manager_la_LDFLAGS = $(fluxmod_ldflags) -module
 job_manager_la_LIBADD = $(fluxmod_libadd) \
@@ -57,6 +59,7 @@ test_ldadd = \
         $(top_builddir)/src/modules/job-manager/queue.o \
         $(top_builddir)/src/modules/job-manager/job.o \
         $(top_builddir)/src/modules/job-manager/alloc.o \
+        $(top_builddir)/src/modules/job-manager/simulator.o \
         $(top_builddir)/src/modules/job-manager/start.o \
 	$(top_builddir)/src/common/libtap/libtap.la \
 	$(top_builddir)/src/common/libflux-internal.la \

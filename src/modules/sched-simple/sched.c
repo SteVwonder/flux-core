@@ -170,14 +170,6 @@ static int try_free (flux_t *h, struct simple_sched *ss, const char *R)
     return rc;
 }
 
-static void send_idle_event (flux_t *h)
-{
-    // Used to notify flux-simulator (and potentially other future tools) that
-    // the scheduler is idle until the next job completes or is submitted
-    flux_log (h, LOG_DEBUG, "%s", __FUNCTION__);
-    flux_event_publish (h, "sched-idle", 0, NULL);
-}
-
 void free_cb (flux_t *h, const flux_msg_t *msg, const char *R, void *arg)
 {
     struct simple_sched *ss = arg;
@@ -191,8 +183,7 @@ void free_cb (flux_t *h, const flux_msg_t *msg, const char *R, void *arg)
         flux_log_error (h, "free_cb: schedutil_free_respond");
 
     /* See if we can fulfill alloc for a pending job */
-    if (try_alloc (h, ss) == false)
-        send_idle_event (h);
+    try_alloc (h, ss);
 }
 
 static void alloc_cb (flux_t *h, const flux_msg_t *msg,
@@ -218,8 +209,7 @@ static void alloc_cb (flux_t *h, const flux_msg_t *msg,
     flux_log (h, LOG_DEBUG, "req: %ju: spec={%d,%d,%d}",
                             (uintmax_t) ss->job->id, ss->job->jj.nnodes,
                             ss->job->jj.nslots, ss->job->jj.slot_size);
-    if (try_alloc (h, ss) == false)
-        send_idle_event (h);
+    try_alloc (h, ss);
     return;
 err:
     if (flux_respond_error (h, msg, errno, NULL) < 0)
@@ -268,6 +258,17 @@ err:
     json_decref (o);
     if (flux_respond_error (h, msg, errno, NULL) < 0)
         flux_log_error (h, "flux_respond_error");
+}
+
+static void quiescent_cb (flux_t *h, flux_msg_handler_t *mh,
+                          const flux_msg_t *msg, void *arg)
+{
+    // the simple scheduler is purely event-driven, so the processing of this
+    // request means that (assuming no additional external events), the
+    // scheduler is quiesced
+    const char *payload = NULL;
+    flux_msg_get_string (msg, &payload);
+    flux_respond (h, msg, payload);
 }
 
 static int simple_sched_init (flux_t *h, struct simple_sched *ss)
@@ -339,6 +340,7 @@ static int process_args (flux_t *h, struct simple_sched *ss,
 }
 
 static const struct flux_msg_handler_spec htab[] = {
+    { FLUX_MSGTYPE_REQUEST, "sched.quiescent", quiescent_cb, 0 },
     { FLUX_MSGTYPE_REQUEST, "sched-simple.status", status_cb, FLUX_ROLE_USER },
     FLUX_MSGHANDLER_TABLE_END,
 };

@@ -34,6 +34,7 @@ struct job_manager_ctx {
     struct event_ctx *event_ctx;
     struct submit_ctx *submit_ctx;
     struct drain_ctx *drain_ctx;
+    struct sim_ctx *sim_ctx;
 };
 
 static void list_cb (flux_t *h, flux_msg_handler_t *mh,
@@ -85,7 +86,11 @@ int mod_main (flux_t *h, int argc, char **argv)
         flux_log_error (h, "error creating submit interface");
         goto done;
     }
-    if (!(ctx.alloc_ctx = alloc_ctx_create (h, ctx.queue, ctx.event_ctx))) {
+    if (!(ctx.sim_ctx = sim_ctx_create (h))) {
+        flux_log_error (h, "error creating event batcher");
+        goto done;
+    }
+    if (!(ctx.alloc_ctx = alloc_ctx_create (h, ctx.queue, ctx.event_ctx, ctx.sim_ctx))) {
         flux_log_error (h, "error creating scheduler interface");
         goto done;
     }
