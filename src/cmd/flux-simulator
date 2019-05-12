@@ -4,20 +4,20 @@ from __future__ import print_function
 import argparse
 import re
 import csv
-import six
-import sys
+import math
 import json
 import logging
 import heapq
 from abc import ABCMeta, abstractmethod
 from datetime import datetime, timedelta
-from itertools import groupby
-from operator import attrgetter
-from collections import defaultdict, Sequence
+from collections import Sequence
 
+import six
 import flux
-from flux import job, rpc, util, kvs
-from flux.rpc import RPC
+import flux.job
+import flux.util
+import flux.kvs
+import flux.constants
 
 
 def create_resource(res_type, count, with_child=[]):
