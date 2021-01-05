@@ -14,7 +14,7 @@ import unittest
 import subflux
 
 import flux
-from flux.job.workflow import Job
+from flux.job.workflow import Job, Ensemble
 from flux.job.Jobspec import JobspecV1
 from flux.job import JobID
 
@@ -100,6 +100,77 @@ class TestJob(unittest.TestCase):
         job = Job(self.fh, JobspecV1.from_command(["sleep", "1000"]))
         with self.assertRaises(RuntimeError) as error:
             job.kill()
+
+class TestEnsemble(unittest.TestCase):
+    @classmethod
+    def setUpClass(self):
+        self.fh = flux.Flux()
+        self.jobs = [
+            JobspecV1.from_command(["hostname"]),
+            JobspecV1.from_command(["hostname"]).dumps(),
+        ] * 2
+
+    def test_init(self):
+        jobs = self.jobs + [Job(self.fh, JobspecV1.from_command(["hostname"]))]
+        ensemble = Ensemble(self.fh, self.jobs)
+        for job in ensemble.jobs():
+            self.assertEqual(job.jobspec['tasks'][0]['command'], ["hostname"])
+        self.assertEqual(len(ensemble.jobs()), 3)
+
+    def test_submit(self):
+        ensemble = Ensemble(self.fh, self.jobs)
+        ensemble.submit()
+        for job in ensemble.jobs():
+            self.assertGreater(job.jobid, 0)
+
+    def test_submit_failure(self):
+        ensemble = Ensemble(self.fh, self.jobs)
+        ensemble.submit()
+        # TODO: is this right? Or a list of errors?
+        with self.assertRaises(RuntimeError) as error:
+            ensemble.submit()
+
+    def test_wait(self):
+        ensemble = Ensemble(self.fh, self.jobs)
+        ensemble.submit()
+
+    def test_wait_failure(self):
+        ensemble = Ensemble(self.fh, self.jobs)
+        # TODO: is this right? Or a list of errors?
+        with self.assertRaises(RuntimeError) as error:
+            ensemble.wait()
+
+    def test_cancel(self):
+        ensemble = Ensemble(self.fh, self.jobs)
+        ensemble.submit()
+        ensemble.cancel()
+
+    def test_cancel_failure(self):
+        ensemble = Ensemble(self.fh, self.jobs)
+        # TODO: is this right? Or a list of errors?
+        with self.assertRaises(RuntimeError) as error:
+            ensemble.cancel()
+        ensemble.submit()
+        ensemble.cancel()
+        # TODO: is this right? Or a list of errors?
+        with self.assertRaises(RuntimeError) as error:
+            ensemble.cancel()
+
+    def test_kill(self):
+        ensemble = Ensemble(self.fh, self.jobs)
+        ensemble.submit()
+        ensemble.kill()
+
+    def test_kill_failure(self):
+        ensemble = Ensemble(self.fh, self.jobs)
+        # TODO: is this right? Or a list of errors?
+        with self.assertRaises(RuntimeError) as error:
+            ensemble.kill()
+        ensemble.submit()
+        ensemble.kill()
+        # TODO: is this right? Or a list of errors?
+        with self.assertRaises(RuntimeError) as error:
+            ensemble.kill()
 
 def __flux_size():
     return 1

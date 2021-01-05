@@ -120,3 +120,43 @@ class Job(JobABC):
         if not self._submitted:
             raise RuntimeError("Cannot wait on events for an unsubmitted job")
         return flux.job.event_wait(self.handle, self.jobid, name, **kwargs)
+
+class JobPoolABC(JobABC):
+    @abstractmethod
+    def jobs(self):
+        pass
+
+class Ensemble(JobPoolABC):
+    def __init__(self, flux_handle, jobs):
+        self._fh = flux_handle
+        def to_job(x):
+            if isinstance(x, Job):
+                return x
+            else:
+                return Job(flux_handle, x)
+        self._jobs = [to_job(x) for x in jobs]
+
+    def jobs(self):
+        yield from self._jobs
+
+    def submit(self, **kwargs):
+        [job.submit_async(**kwargs) for job in self.jobs()]
+        # TODO: what about exceptions?
+        return [job.jobid for job in self.jobs()]
+
+    def cancel(self, reason=None):
+        futures = [job.cancel_async(reason=reason) for job in self.jobs()]
+        # TODO: what about exceptions?
+        return [future.get() for future in futures]
+
+    def kill(self, signum=None):
+        futures = [job.kill_async(signum=signum) for job in self.jobs()]
+        # TODO: what about exceptions?
+        return [future.get() for future in futures]
+
+    def wait(self):
+        for job in self.jobs():
+            if job.waitable:
+                job.wait()
+            else:
+                job.event_wait("free")
