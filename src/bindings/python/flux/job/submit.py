@@ -16,12 +16,14 @@ from flux.job.Jobspec import _convert_jobspec_arg_to_string
 from flux.job._wrapper import _RAW as RAW
 from _flux._core import ffi, lib
 
+from perfflowaspect import aspect
 
 class SubmitFuture(Future):
     def get_id(self):
         return submit_get_id(self)
 
 
+@aspect.critical_path()
 def submit_async(
     flux_handle,
     jobspec,
@@ -69,6 +71,7 @@ def submit_async(
 
 
 @check_future_error
+@aspect.critical_path()
 def submit_get_id(future):
     """Get job ID from a Future returned by job.submit_async()
 
@@ -89,6 +92,7 @@ def submit_get_id(future):
     return int(jobid[0])
 
 
+@aspect.critical_path()
 def submit(
     flux_handle,
     jobspec,

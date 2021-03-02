@@ -16,6 +16,7 @@ from flux.future import WaitAllFuture
 from flux.job.info import JobInfo
 from flux.rpc import RPC
 
+from perfflowaspect import aspect
 
 VALID_ATTRS = [
     "userid",
@@ -52,6 +53,10 @@ class JobListRPC(RPC):
         for job in self.get_jobs():
             yield JobInfo(job)
 
+    @aspect.critical_path()
+    def then(self, *args, **kwargs):
+        super(self).then(*args, **kwargs)
+
 
 # Due to subtleties in the python bindings and this call, this binding
 # is more of a reimplementation of flux_job_list() instead of calling
@@ -61,6 +66,7 @@ class JobListRPC(RPC):
 # - Desired return value is json array, not a single value
 #
 # pylint: disable=dangerous-default-value
+@aspect.critical_path()
 def job_list(
     flux_handle, max_entries=1000, attrs=[], userid=os.getuid(), states=0, results=0
 ):

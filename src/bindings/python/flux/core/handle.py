@@ -24,6 +24,7 @@ from flux.core.watchers import FDWatcher
 from flux.constants import FLUX_POLLIN, FLUX_POLLOUT, FLUX_POLLERR
 from _flux._core import ffi, lib
 
+from perfflowaspect import aspect
 
 # pylint: disable=too-many-public-methods
 class Flux(Wrapper):
@@ -43,6 +44,7 @@ class Flux(Wrapper):
     tls.reactor_depth = 0
     tls.exception = None
 
+    @aspect.critical_path()
     def __init__(self, url=ffi.NULL, flags=0, handle=None):
         super(Flux, self).__init__(
             ffi,

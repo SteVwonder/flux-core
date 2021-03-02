@@ -16,6 +16,7 @@ from flux.core.handle import Flux  # for typing
 from flux.job.JobID import JobID  # for typing
 from _flux._core import ffi
 
+from perfflowaspect import aspect
 
 def kill_async(
     flux_handle: Flux, jobid: Union[JobID, int], signum: Optional[int] = None
@@ -62,7 +63,7 @@ def cancel_async(
         reason = ffi.NULL
     return Future(RAW.cancel(flux_handle, int(jobid), reason))
 
-
+@aspect.critical_path()
 def cancel(flux_handle: Flux, jobid: Union[JobID, int], reason: Optional[str] = None):
     """Cancel a pending or or running job
 
