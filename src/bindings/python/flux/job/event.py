@@ -41,7 +41,7 @@ class EventLogEvent:
     wrapper class for a single KVS EventLog entry
     """
 
-    def __init__(self, event):
+    def __init__(self, event, jobid):
         """
         "Initialize from a string or dict eventlog event
         """
@@ -52,6 +52,7 @@ class EventLogEvent:
         self._context = {}
         if "context" in event:
             self._context = event["context"]
+        self._jobid = jobid
 
     def __str__(self):
         return "{0.timestamp:<0.5f}: {0.name} {0.context}".format(self)
@@ -68,6 +69,9 @@ class EventLogEvent:
     def context(self):
         return self._context
 
+    @property
+    def jobid(self):
+        return self._jobid
 
 class JobEventWatchFuture(Future):
     """
@@ -83,9 +87,10 @@ class JobEventWatchFuture(Future):
         except AttributeError:
             pass
 
-    def __init__(self, future_handle):
+    def __init__(self, future_handle, jobid):
         super().__init__(future_handle)
         self.needs_cancel = True
+        self.jobid = jobid
 
     def get_event(self, autoreset=True):
         """
@@ -107,7 +112,7 @@ class JobEventWatchFuture(Future):
                 return None
             # re-raise all other exceptions
             raise
-        event = EventLogEvent(ffi.string(result[0]).decode("utf-8"))
+        event = EventLogEvent(ffi.string(result[0]).decode("utf-8"), self.jobid)
         if autoreset is True:
             self.reset()
         return event
@@ -139,8 +144,9 @@ def event_watch_async(flux_handle, jobid, eventlog="eventlog"):
     :rtype: JobEventWatchFuture
     """
 
-    future = RAW.event_watch(flux_handle, int(jobid), eventlog, 0)
-    return JobEventWatchFuture(future)
+    jobid = int(jobid)
+    future = RAW.event_watch(flux_handle, jobid, eventlog, 0)
+    return JobEventWatchFuture(future, jobid)
 
 
 def event_watch(flux_handle, jobid, eventlog="eventlog"):

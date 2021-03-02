@@ -25,6 +25,13 @@ import flux
 from flux.job.submit import submit_async, submit_get_id
 from flux.job.event import event_watch_async, JobException, MAIN_EVENTS
 
+from perfflowaspect import aspect
+
+#logging.basicConfig(level=logging.DEBUG)
+#PROF_LOGGER = logging.getLogger("profiling")
+#handler = logging.FileHandler('profiling.log')
+#handler.setFormatter(logging.Formatter("%(asctime)s: %(message)s"))
+#PROF_LOGGER.addHandler(handler)
 
 class _FluxExecutorThread(threading.Thread):
     """Thread that submits jobs to Flux and waits for event updates.
@@ -54,17 +61,21 @@ class _FluxExecutorThread(threading.Thread):
         self.__poll_interval = poll_interval
         self.__flux_handle = flux.Flux(*handle_args, **handle_kwargs)
 
+    @aspect.critical_path()
     def run(self):
         """Loop indefinitely, submitting jobspecs and fetching jobids."""
         self.__flux_handle.timer_watcher_create(
             self.__poll_interval, self.__submit_new_jobs, repeat=self.__poll_interval
         ).start()
+        PROF_LOGGER.info(f"Thread {threading.get_ident()} entered run")
         while self.__work_remains():
             self.__submit_new_jobs(reactor_run=False)
+            PROF_LOGGER.info(f"Thread {threading.get_ident()} entering reactor")
             if self.__flux_handle.reactor_run() < 0:
                 msg = "reactor start failed"
                 self.__flux_handle.fatal_error(msg)
                 raise RuntimeError(msg)
+        PROF_LOGGER.info(f"Thread {threading.get_ident()} exited run - no more work")
 
     def __work_remains(self):
         """Return True if and only if there is still work to be done.
@@ -77,12 +88,14 @@ class _FluxExecutorThread(threading.Thread):
             or self.__remaining_flux_futures > 0
         )
 
+    @aspect.critical_path()
     def __submit_new_jobs(self, *_, reactor_run=True):
         """Pull jobspecs from the queue and submit them.
 
         Invoked on a timer, and passed several arguments, none
         of which are used---hence the "*_"
         """
+        PROF_LOGGER.info(f"Thread {threading.get_ident()} checking for jobs to submit")
         if not self.__work_remains() and reactor_run:
             self.__flux_handle.reactor_stop()
         if self.__remaining_flux_futures == 0 and not self.__jobspecs_to_submit:
@@ -94,6 +107,7 @@ class _FluxExecutorThread(threading.Thread):
                 continue
             if user_future.set_running_or_notify_cancel():
                 try:
+                    PROF_LOGGER.info(f"Thread {threading.get_ident()} async submitting a job")
                     submit_async(self.__flux_handle, jobspec).then(
                         self.__submission_callback, user_future
                     )
@@ -101,19 +115,27 @@ class _FluxExecutorThread(threading.Thread):
                     user_future.set_exception(os_error)
                 else:
                     self.__remaining_flux_futures += 1
+        PROF_LOGGER.info(f"Thread {threading.get_ident()} done checking for jobs to submit")
 
+    @aspect.critical_path()
     def __submission_callback(self, submission_future, user_future):
         """Callback invoked when a jobid is ready for a submitted jobspec."""
         jobid = submit_get_id(submission_future)
+        PROF_LOGGER.info(f"Thread {threading.get_ident()} had job {jobid} successfully ingested")
         user_future._set_jobid(jobid)  # pylint: disable=protected-access
+        PROF_LOGGER.info(f"Thread {threading.get_ident()} installing event watcher")
         event_watch_async(self.__flux_handle, jobid).then(
             self.__event_update, user_future
         )
+        PROF_LOGGER.info(f"Thread {threading.get_ident()} installed event watcher")
 
+    @aspect.critical_path()
     def __event_update(self, event_future, user_future):
         """Callback invoked when a job has an event update."""
+        profiling_str_prefix = "Thread {} starting event_update cb".format(threading.get_ident())
         event = event_future.get_event()
         if event is not None:
+            PROF_LOGGER.info(f"{profiling_str_prefix} - for job {event.jobid} - {event.name}")
             if event.name in user_future.EVENTS:
                 user_future._set_event(event)  # pylint: disable=protected-access
             # check if the event tells us that the job is done
@@ -128,8 +150,11 @@ class _FluxExecutorThread(threading.Thread):
                         user_future.set_exception(ValueError(exit_status))
                 elif event.name == "exception" and event.context["severity"] == 0:
                     user_future.set_exception(JobException(event))
+            PROF_LOGGER.info(f"Thread {threading.get_ident()} finished event_update cb - for job {event.jobid} - {event.name}")
         else:  # no more events
+            PROF_LOGGER.info(f"{profiling_str_prefix} - no more events")
             self.__remaining_flux_futures -= 1
+            PROF_LOGGER.info(f"Thread {threading.get_ident()} finished event_update cb - for no more events")
 
 
 class FluxExecutorFuture(concurrent.futures.Future):
@@ -373,6 +398,7 @@ class FluxExecutor:
     EVENTS = MAIN_EVENTS
 
     # pylint: disable=too-many-arguments,dangerous-default-value
+    @aspect.critical_path()
     def __init__(
         self,
         threads=1,
@@ -383,6 +409,8 @@ class FluxExecutor:
     ):
         if threads < 0:
             raise ValueError("the number of threads must be > 0")
+        PROF_LOGGER.info(f"FluxExecutor initialized")
+
         # split jobs equally among threads; give them each their own queue
         self._submission_queues = [collections.deque() for i in range(threads)]
         self._next_thread = 0  # the next thread to give a job to
@@ -403,13 +431,16 @@ class FluxExecutor:
             )
             for i, deque in enumerate(self._submission_queues)
         ]
+        PROF_LOGGER.info(f"FluxExecutor starting threads")
         for thread in self._executor_threads:
             thread.start()
+        PROF_LOGGER.info(f"FluxExecutor threads started")
         # register a finalizer to ensure worker threads are notified to shut down
         self._finalizer = weakref.finalize(
             self, self._shutdown_threads, self._shutdown_event, self._executor_threads
         )
 
+    @aspect.critical_path()
     def shutdown(self, wait=True, *, cancel_futures=False):
         """Clean-up the resources associated with the Executor.
 
@@ -426,9 +457,11 @@ class FluxExecutor:
         """
         with self._shutdown_lock:
             self._shutdown_event.set()
+        PROF_LOGGER.info(f"FluxExecutor shutting down")
         if cancel_futures:
             # Drain all work items from the queues, and then cancel their
             # associated futures.
+            PROF_LOGGER.info(f"FluxExecutor canceling jobs")
             for deque in self._submission_queues:
                 while deque:
                     try:
@@ -436,12 +469,14 @@ class FluxExecutor:
                     except IndexError:
                         pass
                     else:
+                        PROF_LOGGER.info(f"FluxExecutor canceling job {user_future.jobid}")
                         user_future.cancel()
                         user_future.set_running_or_notify_cancelled()
         if wait:
             for thread in self._executor_threads:
                 thread.join()
 
+    @aspect.critical_path()
     def submit(self, jobspec):
         """Submit a jobspec to Flux and return a ``FluxExecutorFuture``.
 
@@ -450,6 +485,7 @@ class FluxExecutor:
         with self._shutdown_lock:
             if self._shutdown_event.is_set():
                 raise RuntimeError("cannot schedule new futures after shutdown")
+            PROF_LOGGER.info(f"FluxExecutor submitting job to thread at idx {self._next_thread}")
             future_owner_id = self._executor_threads[self._next_thread].ident
             fut = FluxExecutorFuture(future_owner_id)
             self._submission_queues[self._next_thread].append((jobspec, fut))
