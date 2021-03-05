@@ -102,3 +102,9 @@ compile_flags.txt
 # Rules to ignore auto-generated test harness scripts
 test_*.t
 !/src/bindings/python/test_commands/test_runner.t
+
+etc/completions/flux
+
+src/cmd/flux-R
+src/modules/job-exec/bulk-exec
+src/shell/flux-shell

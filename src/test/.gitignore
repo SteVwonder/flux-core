@@ -7,3 +7,4 @@
 /tpmikvs
 /mpi_hello
 /tbarrier
+docker/poison-libflux.sh
